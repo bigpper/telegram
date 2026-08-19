@@ -29,6 +29,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/bridgeconfig"
 	"maunium.net/go/mautrix/id"
 
+	"go.mau.fi/mautrix-telegram/pkg/connector/ids" // COMPANY PATCH (ADR-0001)
 	"go.mau.fi/mautrix-telegram/pkg/connector/media"
 )
 
@@ -115,6 +116,15 @@ type DisplaynameParams struct {
 	Username  string
 	UserID    int64
 	Deleted   bool
+
+	// COMPANY PATCH (ADR-0001). Every other field here is customer PII, so the
+	// only safe template without this one is a constant — which makes every
+	// customer render as the identical string and the room list unusable.
+	//
+	// Opaque is a short fragment of the same keyed token used for the ghost's
+	// Matrix ID: stable, distinguishable, and not reversible without the key.
+	// Use `displayname_template: "Customer {{ .Opaque }}"`.
+	Opaque string
 }
 
 func (c *TelegramConfig) FormatDisplayname(firstName, lastName, username string, deleted bool, userID int64) string {
@@ -126,6 +136,7 @@ func (c *TelegramConfig) FormatDisplayname(firstName, lastName, username string,
 		Username:  username,
 		UserID:    userID,
 		Deleted:   deleted,
+		Opaque:    ids.OpaqueDisplayToken(userID), // COMPANY PATCH (ADR-0001)
 	})
 	if err != nil {
 		panic(fmt.Errorf("displayname template is broken: %w", err))
@@ -214,6 +225,13 @@ func (tc *TelegramConnector) GetConfig() (example string, data any, upgrader up.
 }
 
 func (tc *TelegramConnector) ValidateConfig() error {
+	// COMPANY PATCH (ADR-0001): refuse to start without the identity masking key.
+	// Without it MakeUserID panics at the first ghost; failing here instead gives a
+	// clear message and guarantees the bridge never runs in a state where it would
+	// emit Telegram-derived Matrix IDs.
+	if err := ids.ValidateIdentityKey(); err != nil {
+		return err
+	}
 	if tc.Config.APIID == 0 {
 		return fmt.Errorf("api_id is required")
 	}

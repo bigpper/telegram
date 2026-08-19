@@ -170,7 +170,10 @@ func NewTelegramClient(ctx context.Context, tc *TelegramConnector, login *bridge
 		main:           tc,
 		telegramUserID: telegramUserID,
 		loginID:        login.ID,
-		userID:         networkid.UserID(login.ID),
+		// COMPANY PATCH (ADR-0001): was networkid.UserID(login.ID), a direct cast
+		// that put the raw Telegram ID of the company's own account into Matrix,
+		// bypassing MakeUserID entirely.
+		userID: ids.UserLoginIDToUserID(login.ID),
 		userLogin:      login,
 		metadata:       login.Metadata.(*UserLoginMetadata),
 
@@ -626,7 +629,10 @@ func (tc *TelegramClient) LogoutRemote(ctx context.Context) {
 }
 
 func (tc *TelegramClient) IsThisUser(ctx context.Context, userID networkid.UserID) bool {
-	return userID == networkid.UserID(tc.userLogin.ID)
+	// COMPANY PATCH (ADR-0001): userID is now an opaque token, so comparing it
+	// against the raw decimal login ID would never match — this check would have
+	// silently returned false for every message the company account sent.
+	return userID == ids.UserLoginIDToUserID(tc.userLogin.ID)
 }
 
 func (tc *TelegramClient) mySender() bridgev2.EventSender {

@@ -27,37 +27,57 @@ import (
 	"go.mau.fi/mautrix-telegram/pkg/gotd/tg"
 )
 
+// COMPANY PATCH (ADR-0001): these three functions used to encode the raw Telegram
+// ID as the network user ID, which ends up inside every ghost's Matrix ID and is
+// therefore visible to every agent. They now emit an opaque token instead. See
+// identity.go for the reasoning and the format.
+//
+// The panics below are deliberate and fail closed. These signatures cannot return
+// an error, and the only way to reach them with a broken key is to run without
+// MAUTRIX_IDENTITY_KEY — which ValidateConfig already refuses at startup. Emitting
+// a Telegram-derived fallback here would silently defeat the whole boundary, so
+// crashing is the correct behaviour.
 func MakeUserID(userID int64) networkid.UserID {
 	if userID == 0 {
 		return ""
 	}
-	return networkid.UserID(strconv.FormatInt(userID, 10))
+	token, err := opaqueToken(PeerTypeUser, userID)
+	if err != nil {
+		panic(fmt.Errorf("ADR-0001: cannot mint user ID: %w", err))
+	}
+	return networkid.UserID(token)
 }
 
 func MakeChannelUserID(channelID int64) networkid.UserID {
 	if channelID == 0 {
 		return ""
 	}
-	return networkid.UserID("channel-" + strconv.FormatInt(channelID, 10))
+	token, err := opaqueToken(PeerTypeChannel, channelID)
+	if err != nil {
+		panic(fmt.Errorf("ADR-0001: cannot mint channel user ID: %w", err))
+	}
+	return networkid.UserID(token)
 }
 
 func ParseUserID(userID networkid.UserID) (PeerType, int64, error) {
-	peerType := PeerTypeUser
-	rawUserID := string(userID)
-	if strings.HasPrefix(string(userID), "channel-") {
-		peerType = PeerTypeChannel
-		rawUserID = strings.TrimPrefix(rawUserID, "channel-")
-	}
-	id, err := strconv.ParseInt(rawUserID, 10, 64)
-	return peerType, id, err
+	return parseOpaqueToken(string(userID))
 }
 
 func ParseUserLoginID(userID networkid.UserLoginID) (int64, error) {
 	return strconv.ParseInt(string(userID), 10, 64)
 }
 
+// COMPANY PATCH (ADR-0001): user login IDs stay as raw decimal Telegram IDs —
+// they identify the company's OWN logged-in account, live only in the bridge
+// database, and are what an integration admin types into `logout <login ID>`.
+// They must not, however, be cast straight to a network user ID any more, because
+// that value does reach Matrix. Convert properly instead.
 func UserLoginIDToUserID(userLoginID networkid.UserLoginID) networkid.UserID {
-	return networkid.UserID(userLoginID)
+	id, err := ParseUserLoginID(userLoginID)
+	if err != nil {
+		return ""
+	}
+	return MakeUserID(id)
 }
 
 func MakeUserLoginID(userID int64) networkid.UserLoginID {

@@ -29,6 +29,7 @@ import (
 	"go.mau.fi/util/ptr"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/networkid" // COMPANY PATCH (ADR-0001)
 
 	"go.mau.fi/mautrix-telegram/pkg/connector/humanise"
 	"go.mau.fi/mautrix-telegram/pkg/connector/ids"
@@ -174,6 +175,22 @@ func (tc *TelegramClient) ResolveIdentifier(ctx context.Context, identifier stri
 
 	if len(identifier) == 0 {
 		return nil, fmt.Errorf("empty identifier")
+	}
+
+	// COMPANY PATCH (ADR-0001). Starting a chat with an existing ghost passes that
+	// ghost's network user ID here. Upstream that is the decimal Telegram ID, so the
+	// integer branch below caught it; with opaque identifiers it matches nothing and
+	// the user sees "Failed to create chat".
+	//
+	// Decrypting here is correct and does not weaken the boundary: this runs inside
+	// the bridge, which is the only process holding the key. The integrity check in
+	// parseOpaqueToken means a non-token identifier falls through to the normal
+	// branches rather than being misread.
+	if peerType, telegramUserID, err := ids.ParseUserID(networkid.UserID(identifier)); err == nil {
+		if peerType != ids.PeerTypeUser {
+			return nil, fmt.Errorf("cannot start a chat with a %s", peerType)
+		}
+		return tc.resolveUserID(ctx, telegramUserID)
 	}
 
 	if identifier[0] == '+' {
