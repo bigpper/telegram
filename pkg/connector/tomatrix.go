@@ -246,6 +246,28 @@ func (tc *TelegramClient) convertToMatrix(
 			},
 		})
 	}
+	// COMPANY ADDITION: render inline keyboards. Upstream drops reply_markup, which
+	// leaves the agent seeing a bot's prompt without its options. Rendering only —
+	// see replymarkup.go for why pressing is deliberately not built here.
+	if rendered, ok := renderInlineKeyboard(msg); ok {
+		last := cm.Parts[len(cm.Parts)-1]
+		if last.Content.FileName != "" || last.Content.URL != "" || last.Content.File != nil {
+			// A media part: its Body is the filename, so appending would corrupt the
+			// displayed name. Give the buttons their own trailing notice instead.
+			cm.Parts = append(cm.Parts, &bridgev2.ConvertedMessagePart{
+				Type: event.EventMessage,
+				Content: &event.MessageEventContent{
+					MsgType:       event.MsgNotice,
+					Body:          rendered.text,
+					Format:        event.FormatHTML,
+					FormattedBody: rendered.html,
+				},
+			})
+		} else {
+			appendInlineKeyboard(last.Content, rendered)
+		}
+	}
+
 	if perMessageProfile != nil {
 		cm.Parts[0].Content.BeeperPerMessageProfile = perMessageProfile
 		cm.Parts[0].Content.AddPerMessageProfileFallback()
