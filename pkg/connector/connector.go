@@ -17,8 +17,8 @@
 package connector
 
 import (
-	"github.com/rs/zerolog"
 	"context"
+	"github.com/rs/zerolog"
 
 	"go.mau.fi/util/dbutil"
 	"maunium.net/go/mautrix/bridgev2"
@@ -50,6 +50,13 @@ func (tc *TelegramConnector) Start(ctx context.Context) error {
 	// handler registration rather than a mautrix-go fork.
 	if !tc.registerPinHandler(ctx) {
 		zerolog.Ctx(ctx).Warn().Msg("Could not register pin handler; pins will sync Telegram->Matrix only")
+	}
+
+	// COMPANY PATCH: inline-keyboard button presses. See buttonpress.go — the
+	// allowlist there, not this registration, is what decides whether a press is
+	// permitted, so registering unconditionally is safe.
+	if !tc.registerButtonPressHandler(ctx) {
+		zerolog.Ctx(ctx).Warn().Msg("Could not register button press handler; inline keyboard buttons stay inert")
 	}
 	return tc.Store.Upgrade(ctx)
 }

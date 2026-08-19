@@ -251,6 +251,15 @@ func (tc *TelegramClient) convertToMatrix(
 	// see replymarkup.go for why pressing is deliberately not built here.
 	if rendered, ok := renderInlineKeyboard(msg); ok {
 		last := cm.Parts[len(cm.Parts)-1]
+		// Descriptors let the client draw pressable buttons. Coordinates and labels
+		// only — the callback payload is never published here; buttonpress.go
+		// re-fetches it from Telegram when a press actually arrives.
+		if len(rendered.buttons) > 0 {
+			if last.Extra == nil {
+				last.Extra = map[string]any{}
+			}
+			last.Extra["com.company.telegram.buttons"] = rendered.buttons
+		}
 		if last.Content.FileName != "" || last.Content.URL != "" || last.Content.File != nil {
 			// A media part: its Body is the filename, so appending would corrupt the
 			// displayed name. Give the buttons their own trailing notice instead.

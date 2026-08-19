@@ -7,18 +7,19 @@
 // a bot's prompt without its options — the customer is looking at three buttons and
 // the agent cannot tell they exist, let alone what they say.
 //
-// THIS IS RENDERING ONLY, AND THAT IS A DELIBERATE LIMIT.
+// WHAT IS PRESSABLE, AND WHAT DECIDES IT.
 //
-// Callback buttons are shown as inert labels. Making them pressable is not a bigger
-// version of this file: a press executes an action on Telegram AS THE COMPANY
-// ACCOUNT, which is a new capability for agents and has to enter the §12 policy
-// model explicitly — with a policy flag and an audit record — rather than arriving
-// as a side effect of having drawn the buttons. Nothing here creates that path.
+// Callback buttons ARE pressable — see buttonpress.go for the return path. A press
+// executes an action on Telegram AS THE COMPANY ACCOUNT, so it is gated by a
+// server-side allowlist of bots in the bridge config, not by the client. This file
+// only decides which buttons are *eligible*; buttonpress.go decides whether a
+// particular press is permitted, and re-derives the kind rather than trusting the
+// client's claim.
 //
-// URL buttons DO become real links, because they add no reach: message text can
-// already contain links and Element already makes those clickable.
+// URL buttons become real links, because they add no reach: message text can already
+// contain links and Element already makes those clickable.
 //
-// Two button types look like links but are not treated as such:
+// Two button types look like links but stay INERT and are not pressable at all:
 //
 //   - KeyboardButtonURLAuth ("Login URL") — following it authorises the bot to learn
 //     the account's Telegram identity. On this deployment that account is the company
@@ -26,8 +27,8 @@
 //   - KeyboardButtonWebView / SimpleWebView — opens a bot-controlled mini app inside
 //     the Telegram session context.
 //
-// Both are rendered as inert labels carrying their type, so an agent can see the
-// button exists and ask an administrator rather than being silently blocked.
+// Both are rendered as labels carrying their type, so an agent can see the button
+// exists and ask an administrator rather than being silently blocked.
 
 package connector
 
@@ -40,10 +41,29 @@ import (
 	"maunium.net/go/mautrix/event"
 )
 
-// renderedMarkup is the plain-text and HTML rendering of one inline keyboard.
+// renderedMarkup is the plain-text and HTML rendering of one inline keyboard,
+// plus the machine-readable descriptor the client needs to draw pressable buttons.
 type renderedMarkup struct {
 	text string
 	html string
+	// buttons carries COORDINATES AND LABELS ONLY — never KeyboardButtonCallback.Data.
+	// The callback payload stays on the Telegram side: when a press arrives, the
+	// bridge re-fetches the message and reads the payload then. Putting it in Matrix
+	// would publish, to every room member and to anyone reading the room later, the
+	// exact bytes needed to drive the bot.
+	buttons []buttonDescriptor
+}
+
+// buttonDescriptor is one entry of the com.company.telegram.buttons event field.
+type buttonDescriptor struct {
+	Row   int    `json:"row"`
+	Col   int    `json:"col"`
+	Label string `json:"label"`
+	// callback | url | login | webapp | inline_query | game | payment | unsupported.
+	// Only "callback" is pressable; the rest are rendered but inert, either because
+	// they are already a link or because pressing them would authorise a bot against
+	// the company Telegram identity.
+	Kind string `json:"kind"`
 }
 
 // renderInlineKeyboard converts a message's inline keyboard to text and HTML.
@@ -63,15 +83,21 @@ func renderInlineKeyboard(msg *tg.Message) (renderedMarkup, bool) {
 	}
 
 	var textRows, htmlRows []string
-	for _, row := range inline.Rows {
+	var descriptors []buttonDescriptor
+	for rowIdx, row := range inline.Rows {
 		var textButtons, htmlButtons []string
-		for _, button := range row.Buttons {
+		for colIdx, button := range row.Buttons {
 			t, h := renderButton(button)
 			if t == "" {
 				continue
 			}
 			textButtons = append(textButtons, t)
 			htmlButtons = append(htmlButtons, h)
+			if label, kind := describeButton(button); label != "" {
+				descriptors = append(descriptors, buttonDescriptor{
+					Row: rowIdx, Col: colIdx, Label: label, Kind: kind,
+				})
+			}
 		}
 		if len(textButtons) > 0 {
 			// Telegram lays buttons out in rows; keeping one row per line preserves
@@ -85,8 +111,9 @@ func renderInlineKeyboard(msg *tg.Message) (renderedMarkup, bool) {
 	}
 
 	return renderedMarkup{
-		text: strings.Join(textRows, "\n"),
-		html: strings.Join(htmlRows, "<br/>"),
+		text:    strings.Join(textRows, "\n"),
+		html:    strings.Join(htmlRows, "<br/>"),
+		buttons: descriptors,
 	}, true
 }
 
@@ -161,4 +188,37 @@ func appendInlineKeyboard(part *event.MessageEventContent, rendered renderedMark
 	part.Body = strings.TrimRight(part.Body, "\n") + "\n\n" + rendered.text
 	part.Format = event.FormatHTML
 	part.FormattedBody = existingHTML + "<br/><br/>" + rendered.html
+}
+
+// describeButton returns the label and kind for the client-facing descriptor.
+//
+// The kind is what decides pressability, and it is decided HERE rather than in the
+// client so that a client bug cannot promote an inert button into a pressable one.
+// The bridge re-checks the kind again when a press arrives.
+func describeButton(button tg.KeyboardButtonClass) (label, kind string) {
+	switch b := button.(type) {
+	case *tg.KeyboardButtonCallback:
+		return b.Text, "callback"
+	case *tg.KeyboardButtonURL:
+		return b.Text, "url"
+	case *tg.KeyboardButtonURLAuth:
+		return b.Text, "login"
+	case *tg.KeyboardButtonWebView:
+		return b.Text, "webapp"
+	case *tg.KeyboardButtonSimpleWebView:
+		return b.Text, "webapp"
+	case *tg.KeyboardButtonSwitchInline:
+		return b.Text, "inline_query"
+	case *tg.KeyboardButtonGame:
+		return b.Text, "game"
+	case *tg.KeyboardButtonBuy:
+		return b.Text, "payment"
+	case *tg.KeyboardButton:
+		return b.Text, "unsupported"
+	default:
+		if labeled, ok := button.(interface{ GetText() string }); ok {
+			return labeled.GetText(), "unsupported"
+		}
+		return "", ""
+	}
 }

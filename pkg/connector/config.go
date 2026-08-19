@@ -91,6 +91,20 @@ type TelegramConfig struct {
 		BackwardBackfill bool `yaml:"backward_backfill"`
 	} `yaml:"takeout"`
 
+	// COMPANY PATCH — server-side gate for pressable inline-keyboard buttons.
+	//
+	// A press executes an action on Telegram as the company account, so it needs an
+	// enforcement point that an agent's browser cannot talk its way past. This is it:
+	// the bridge refuses any press against a bot that is not listed here, whatever
+	// the client claims and whatever the client-side policy says.
+	//
+	// Empty (the default) means NO button is pressable. Opt-in per bot, by Telegram
+	// user ID — the ID is chosen over the username because usernames can be released
+	// and re-registered by someone else.
+	//
+	// See buttonpress.go.
+	PressableBotIDs []int64 `yaml:"pressable_bot_ids"`
+
 	ContactAvatars                       bool                `yaml:"contact_avatars"`
 	ContactNames                         bool                `yaml:"contact_names"`
 	MaxMemberCount                       int                 `yaml:"max_member_count"`
