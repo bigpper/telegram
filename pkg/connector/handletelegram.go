@@ -319,6 +319,18 @@ func (tc *TelegramClient) handleServiceMessage(ctx context.Context, msg *tg.Mess
 		StreamOrder: int64(msg.GetID()),
 	}
 	switch action := msg.Action.(type) {
+	// COMPANY PATCH (pinned messages).
+	//
+	// Telegram -> Matrix only. Upstream bridges neither direction; the reverse
+	// would require forking mautrix-go, because m.room.pinned_events lands in the
+	// ignored default branch of portal.handleMatrixEvent and no connector-level
+	// hook exists (brief §23 — see docs/upstream-mautrix-changes.md).
+	//
+	// The pinned message is not in the action struct: Telegram sends an empty
+	// MessageActionPinMessage as a service message that REPLIES to the message
+	// being pinned, so the target comes from ReplyTo.
+	case *tg.MessageActionPinMessage:
+		return tc.handleTelegramPin(ctx, msg)
 	case *tg.MessageActionChatEditTitle:
 		res := tc.main.Bridge.QueueRemoteEvent(tc.userLogin, &simplevent.ChatInfoChange{
 			EventMeta:      eventMeta.WithType(bridgev2.RemoteEventChatInfoChange),
@@ -1115,7 +1127,9 @@ func (tc *TelegramClient) onMessageEdit(ctx context.Context, update IGetMessage)
 	sender := tc.getEventSender(msg, !portal.Metadata.(*PortalMetadata).IsSuperGroup)
 
 	// Check if this edit was a data export request acceptance message
-	if sender.Sender == networkid.UserID("777000") {
+	// COMPANY PATCH (ADR-0001): 777000 is Telegram's service-notification account.
+	// Senders are now opaque tokens, so the literal string would never match.
+	if sender.Sender == ids.MakeUserID(777000) {
 		if strings.Contains(msg.Message, "Data export request") && strings.Contains(msg.Message, "Accepted") {
 			zerolog.Ctx(ctx).Info().
 				Int("message_id", msg.ID).
@@ -1658,4 +1672,82 @@ func (tc *TelegramClient) onPhoneCall(ctx context.Context, e tg.Entities, update
 		},
 	})
 	return resultToError(res)
+}
+
+// handleTelegramPin mirrors a Telegram pin into the Matrix room's
+// m.room.pinned_events state. COMPANY PATCH — see the dispatch case above.
+//
+// Matrix stores pins as a single state event holding the complete list, so this
+// reads the current list, appends, and writes it back. Telegram sends one service
+// message per pin, which keeps that read-modify-write cheap.
+func (tc *TelegramClient) handleTelegramPin(ctx context.Context, msg *tg.MessageService) error {
+	log := zerolog.Ctx(ctx)
+
+	pinnedID := 0
+	if rh, ok := msg.ReplyTo.(*tg.MessageReplyHeader); ok {
+		pinnedID = rh.ReplyToMsgID
+	}
+	if pinnedID == 0 {
+		// Telegram also sends this action with no reply header when a pin is
+		// cleared. Nothing identifies which message was unpinned, so there is
+		// nothing to mirror — log rather than guess.
+		log.Debug().Msg("Pin service message has no reply header; ignoring")
+		return nil
+	}
+
+	portalKey := tc.makePortalKeyFromPeer(msg.PeerID, 0)
+	portal, err := tc.main.Bridge.GetPortalByKey(ctx, portalKey)
+	if err != nil {
+		return fmt.Errorf("failed to get portal for pin: %w", err)
+	} else if portal == nil || portal.MXID == "" {
+		log.Debug().Msg("Portal not bridged yet; skipping pin")
+		return nil
+	}
+
+	dbMsg, err := tc.main.Bridge.DB.Message.GetFirstPartByID(
+		ctx, tc.loginID, ids.MakeMessageID(portalKey, pinnedID))
+	if err != nil {
+		return fmt.Errorf("failed to look up pinned message: %w", err)
+	} else if dbMsg == nil {
+		// The pinned message predates bridging, or backfill has not reached it.
+		// Silently skipping is right: inventing a pin for a message the agent
+		// cannot see would be worse than showing no pin.
+		log.Debug().Int("telegram_message_id", pinnedID).
+			Msg("Pinned message not bridged; skipping pin")
+		return nil
+	}
+
+	// Reading arbitrary room state is an OPTIONAL capability in bridgev2, exposed
+	// on the Matrix connector rather than the bot intent. Assert for it instead of
+	// assuming: without it we cannot read the existing list, and overwriting would
+	// silently drop pins that are already there.
+	var current event.PinnedEventsEventContent
+	stateReader, canReadState := tc.main.Bridge.Matrix.(bridgev2.MatrixConnectorWithArbitraryRoomState)
+	if !canReadState {
+		log.Warn().Msg("Matrix connector cannot read arbitrary room state; skipping pin")
+		return nil
+	}
+	if existing, err := stateReader.GetStateEvent(ctx, portal.MXID, event.StatePinnedEvents, ""); err != nil {
+		// A room with no pins yet has no such state event; that is not an error.
+		log.Debug().Err(err).Msg("No existing pinned events state")
+	} else if existing != nil {
+		if parsed, ok := existing.Content.Parsed.(*event.PinnedEventsEventContent); ok && parsed != nil {
+			current = *parsed
+		}
+	}
+	for _, existing := range current.Pinned {
+		if existing == dbMsg.MXID {
+			return nil // already pinned
+		}
+	}
+	current.Pinned = append(current.Pinned, dbMsg.MXID)
+
+	_, err = tc.main.Bridge.Bot.SendState(
+		ctx, portal.MXID, event.StatePinnedEvents, "",
+		&event.Content{Parsed: &current}, time.Time{})
+	if err != nil {
+		return fmt.Errorf("failed to set pinned events: %w", err)
+	}
+	log.Info().Str("event_id", dbMsg.MXID.String()).Msg("Mirrored Telegram pin to Matrix")
+	return nil
 }

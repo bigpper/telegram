@@ -17,6 +17,7 @@
 package connector
 
 import (
+	"github.com/rs/zerolog"
 	"context"
 
 	"go.mau.fi/util/dbutil"
@@ -45,6 +46,11 @@ func (tc *TelegramConnector) Init(bridge *bridgev2.Bridge) {
 }
 
 func (tc *TelegramConnector) Start(ctx context.Context) error {
+	// COMPANY PATCH: Matrix -> Telegram pin sync. See pinsync.go for why this is a
+	// handler registration rather than a mautrix-go fork.
+	if !tc.registerPinHandler(ctx) {
+		zerolog.Ctx(ctx).Warn().Msg("Could not register pin handler; pins will sync Telegram->Matrix only")
+	}
 	return tc.Store.Upgrade(ctx)
 }
 

@@ -691,10 +691,20 @@ func (tc *TelegramClient) getPowerLevelOverridesFromBannedRights(entity tg.ChatC
 		plo.Events[event.StateBeeperDisappearingTimer] = 0
 	}
 
+	// COMPANY PATCH (pinned messages).
+	//
+	// Pins now sync BOTH ways (pinsync.go), so the power level goes back to
+	// mirroring Telegram's own pin_messages right: an agent can pin exactly when the
+	// company account is allowed to pin in that Telegram group.
+	//
+	// This was briefly forced to "nobody" while only Telegram -> Matrix existed,
+	// because a pin that silently fails to reach the customer is worse than no pin
+	// at all. That reason is gone; a failure now produces a notice in the room
+	// instead of silence.
 	if dbr.PinMessages {
 		plo.Events[event.StatePinnedEvents] = *pinMessagesPowerLevel
 	} else {
-		plo.Events[event.StatePinnedEvents] = 0
+		plo.Events[event.StatePinnedEvents] = *nobodyPowerLevel
 	}
 
 	if dbr.SendStickers {
