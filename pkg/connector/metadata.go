@@ -64,6 +64,12 @@ type PortalMetadata struct {
 	FullSynced        bool          `json:"full_synced,omitempty"`
 	ParticipantsCount int           `json:"member_count,omitempty"`
 
+	// COMPANY PATCH: whether the pins that already existed on Telegram when this
+	// portal was bridged have been imported (pinsync.go). A flag rather than a
+	// "does the room have pins" check, because the common case is a room with no
+	// pins at all and that check would re-query Telegram on every sync.
+	PinsImported bool `json:"pins_imported,omitempty"`
+
 	SponsoredMessagePollTS    jsontime.Unix       `json:"sponsored_message_poll_ts,omitempty"`
 	SponsoredMessageEventID   id.EventID          `json:"sponsored_message_event_id,omitempty"`
 	SponsoredMessageRandomID  []byte              `json:"sponsored_message_random_id,omitempty"`

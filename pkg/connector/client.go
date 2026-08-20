@@ -173,9 +173,9 @@ func NewTelegramClient(ctx context.Context, tc *TelegramConnector, login *bridge
 		// COMPANY PATCH (ADR-0001): was networkid.UserID(login.ID), a direct cast
 		// that put the raw Telegram ID of the company's own account into Matrix,
 		// bypassing MakeUserID entirely.
-		userID: ids.UserLoginIDToUserID(login.ID),
-		userLogin:      login,
-		metadata:       login.Metadata.(*UserLoginMetadata),
+		userID:    ids.UserLoginIDToUserID(login.ID),
+		userLogin: login,
+		metadata:  login.Metadata.(*UserLoginMetadata),
 
 		takeoutAccepted: exsync.NewEvent(),
 

@@ -16,6 +16,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/appservice"
@@ -186,3 +187,122 @@ func (tc *TelegramClient) notifyPinFailure(
 }
 
 var _ = appservice.EventProcessor{}
+
+// importPinnedMessages brings across pins that already existed on Telegram when the
+// portal was bridged.
+//
+// The incremental path above only sees pin SERVICE MESSAGES, which Telegram emits
+// when a pin happens. Anything pinned before the room was bridged never produced one
+// we saw, so those pins were invisible — and since Telegram allows many pins per
+// chat, a busy group could arrive with several and show none of them.
+//
+// Runs at most once per portal, guarded by PortalMetadata.PinsImported. The guard is
+// a stored flag rather than "does this room have pins yet", because most rooms have
+// no pins and that test would re-query Telegram on every sync — a rate-limit surface
+// for no benefit (see docs/telegram-rate-limits.md).
+func (tc *TelegramClient) importPinnedMessages(ctx context.Context, portal *bridgev2.Portal) {
+	log := zerolog.Ctx(ctx).With().Str("action", "import telegram pins").Logger()
+
+	meta, ok := portal.Metadata.(*PortalMetadata)
+	if !ok || meta.PinsImported || portal.MXID == "" {
+		return
+	}
+
+	peer, _, err := tc.inputPeerForPortalID(ctx, portal.ID)
+	if err != nil {
+		log.Debug().Err(err).Msg("Could not resolve peer; leaving pins for a later sync")
+		return
+	}
+
+	// The full pinned list is only reachable through search; chat info carries just
+	// pinned_msg_id, which is the single most recent pin and is what made this look
+	// like "Telegram only gives us one".
+	res, err := tc.client.API().MessagesSearch(ctx, &tg.MessagesSearchRequest{
+		Peer:   peer,
+		Filter: &tg.InputMessagesFilterPinned{},
+		Limit:  100,
+	})
+	if err != nil {
+		log.Warn().Err(err).Msg("Could not fetch pinned messages")
+		return
+	}
+
+	var msgs []tg.MessageClass
+	switch r := res.(type) {
+	case *tg.MessagesMessages:
+		msgs = r.Messages
+	case *tg.MessagesMessagesSlice:
+		msgs = r.Messages
+	case *tg.MessagesChannelMessages:
+		msgs = r.Messages
+	default:
+		log.Warn().Msgf("Unexpected search response %T", res)
+		return
+	}
+
+	portalKey := portal.PortalKey
+	var pinned []id.EventID
+	for _, m := range msgs {
+		full, ok := m.(*tg.Message)
+		if !ok {
+			continue
+		}
+		dbMsg, err := tc.main.Bridge.DB.Message.GetFirstPartByID(
+			ctx, tc.loginID, ids.MakeMessageID(portalKey, full.ID))
+		if err != nil || dbMsg == nil {
+			// Predates backfill. Skipping is right: a pin pointing at a message the
+			// agent cannot open is worse than no pin.
+			continue
+		}
+		pinned = append(pinned, dbMsg.MXID)
+	}
+
+	// Mark as done even when nothing was found, so a chat with no pins is not
+	// re-queried forever.
+	meta.PinsImported = true
+	if err := portal.Save(ctx); err != nil {
+		log.Warn().Err(err).Msg("Could not persist pins-imported flag")
+	}
+	if len(pinned) == 0 {
+		return
+	}
+
+	// Merge rather than overwrite: a pin may already have arrived through the
+	// incremental path while this was running.
+	stateReader, canReadState := tc.main.Bridge.Matrix.(bridgev2.MatrixConnectorWithArbitraryRoomState)
+	if !canReadState {
+		log.Warn().Msg("Matrix connector cannot read arbitrary room state; skipping pin import")
+		return
+	}
+	var current event.PinnedEventsEventContent
+	if existing, err := stateReader.GetStateEvent(ctx, portal.MXID, event.StatePinnedEvents, ""); err == nil && existing != nil {
+		if parsed, ok := existing.Content.Parsed.(*event.PinnedEventsEventContent); ok && parsed != nil {
+			current = *parsed
+		}
+	}
+	seen := make(map[id.EventID]struct{}, len(current.Pinned))
+	for _, ev := range current.Pinned {
+		seen[ev] = struct{}{}
+	}
+	added := 0
+	for _, ev := range pinned {
+		if _, dup := seen[ev]; dup {
+			continue
+		}
+		current.Pinned = append(current.Pinned, ev)
+		seen[ev] = struct{}{}
+		added++
+	}
+	if added == 0 {
+		return
+	}
+
+	if _, err := tc.main.Bridge.Bot.SendState(
+		ctx, portal.MXID, event.StatePinnedEvents, "",
+		&event.Content{Parsed: &current}, time.Time{},
+	); err != nil {
+		log.Err(err).Msg("Failed to write imported pins")
+		return
+	}
+	log.Info().Int("imported", added).Int("total", len(current.Pinned)).Msg("Imported Telegram pins")
+}

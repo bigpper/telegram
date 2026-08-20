@@ -532,6 +532,10 @@ func (tc *TelegramClient) filterChannelParticipants(participants []tg.ChannelPar
 }
 
 func (tc *TelegramClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
+	// COMPANY PATCH: bring across pins that existed before this portal was bridged.
+	// Self-guarding — runs at most once per portal, see pinsync.go.
+	tc.importPinnedMessages(ctx, portal)
+
 	peerType, id, topicID, err := ids.ParsePortalID(portal.ID)
 	if err != nil {
 		return nil, err
