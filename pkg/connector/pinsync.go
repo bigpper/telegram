@@ -242,6 +242,7 @@ func (tc *TelegramClient) importPinnedMessages(ctx context.Context, portal *brid
 
 	portalKey := portal.PortalKey
 	var pinned []id.EventID
+	skipped := 0
 	for _, m := range msgs {
 		full, ok := m.(*tg.Message)
 		if !ok {
@@ -250,19 +251,36 @@ func (tc *TelegramClient) importPinnedMessages(ctx context.Context, portal *brid
 		dbMsg, err := tc.main.Bridge.DB.Message.GetFirstPartByID(
 			ctx, tc.loginID, ids.MakeMessageID(portalKey, full.ID))
 		if err != nil || dbMsg == nil {
-			// Predates backfill. Skipping is right: a pin pointing at a message the
-			// agent cannot open is worse than no pin.
+			// Not backfilled YET. A pin pointing at a message the agent cannot open
+			// is worse than no pin, so it is skipped — but see the flag logic below:
+			// this import runs during sync, which can be before backfill has reached
+			// the pinned message, and marking the portal done here would lose that
+			// pin permanently.
+			skipped++
 			continue
 		}
 		pinned = append(pinned, dbMsg.MXID)
 	}
 
-	// Mark as done even when nothing was found, so a chat with no pins is not
-	// re-queried forever.
-	meta.PinsImported = true
+	meta.PinsImportAttempts++
+	// Only call it done when nothing had to be skipped. Otherwise leave the flag
+	// clear so a later sync retries once backfill has more of the history — bounded,
+	// because some pins point at messages that will never be bridged.
+	if skipped == 0 || meta.PinsImportAttempts >= 5 {
+		meta.PinsImported = true
+	}
 	if err := portal.Save(ctx); err != nil {
 		log.Warn().Err(err).Msg("Could not persist pins-imported flag")
 	}
+
+	log.Debug().
+		Int("returned_by_telegram", len(msgs)).
+		Int("resolved", len(pinned)).
+		Int("skipped_not_bridged", skipped).
+		Int("attempt", meta.PinsImportAttempts).
+		Bool("marked_done", meta.PinsImported).
+		Msg("Pin import pass")
+
 	if len(pinned) == 0 {
 		return
 	}

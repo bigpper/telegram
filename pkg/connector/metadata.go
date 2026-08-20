@@ -69,6 +69,10 @@ type PortalMetadata struct {
 	// "does the room have pins" check, because the common case is a room with no
 	// pins at all and that check would re-query Telegram on every sync.
 	PinsImported bool `json:"pins_imported,omitempty"`
+	// Bounded retries. The import runs during sync, which can happen before backfill
+	// has reached a pinned message; without a retry that pin is lost for good, and
+	// without a bound a chat whose pins will never be bridged retries forever.
+	PinsImportAttempts int `json:"pins_import_attempts,omitempty"`
 
 	SponsoredMessagePollTS    jsontime.Unix       `json:"sponsored_message_poll_ts,omitempty"`
 	SponsoredMessageEventID   id.EventID          `json:"sponsored_message_event_id,omitempty"`
