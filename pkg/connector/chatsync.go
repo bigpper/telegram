@@ -30,7 +30,6 @@ import (
 	"go.mau.fi/mautrix-telegram/pkg/connector/ids"
 	"go.mau.fi/mautrix-telegram/pkg/gotd/bin"
 	"go.mau.fi/mautrix-telegram/pkg/gotd/tg"
-	"go.mau.fi/mautrix-telegram/pkg/gotd/tgerr"
 )
 
 type peerfulDialog interface {
@@ -114,7 +113,8 @@ func (tc *TelegramClient) syncChats(ctx context.Context, takeoutID int64, onLogi
 			attempts := 0
 			var err error
 			for retry && attempts < 5 {
-				retry, err = tgerr.FloodWait(ctx, tc.client.Invoke(ctx, wrappedReq, &dialogs))
+				// COMPANY PATCH: record the wait before sleeping through it. See floodwait.go.
+				retry, err = tc.floodWait(ctx, tc.client.Invoke(ctx, wrappedReq, &dialogs))
 				attempts++
 			}
 			if err != nil {

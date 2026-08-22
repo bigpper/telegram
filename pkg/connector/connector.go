@@ -17,6 +17,7 @@
 package connector
 
 import (
+	"sync"
 	"context"
 	"github.com/rs/zerolog"
 
@@ -30,6 +31,12 @@ import (
 type TelegramConnector struct {
 	Bridge *bridgev2.Bridge
 	Config TelegramConfig
+
+	// COMPANY PATCH: serialises the read-modify-write of the flood-wait counters in
+	// floodwait.go. Two goroutines hitting a wait at once would otherwise lose one of
+	// the increments, and undercounting is the wrong direction for this particular
+	// number to be wrong in.
+	floodWaitMu sync.Mutex
 	Store  *store.Container
 
 	useDirectMedia bool
@@ -50,6 +57,13 @@ func (tc *TelegramConnector) Start(ctx context.Context) error {
 	// handler registration rather than a mautrix-go fork.
 	if !tc.registerPinHandler(ctx) {
 		zerolog.Ctx(ctx).Warn().Msg("Could not register pin handler; pins will sync Telegram->Matrix only")
+	}
+
+	// COMPANY PATCH: install the customer panel widget when a portal room is created.
+	// See widgetprovision.go — the bridge does this because it already holds the power
+	// level the state event needs, and the Management API deliberately holds none.
+	if !tc.registerWidgetProvisioner(ctx) {
+		zerolog.Ctx(ctx).Warn().Msg("Could not register widget provisioner; portal rooms will get no customer panel widget")
 	}
 
 	// COMPANY PATCH: inline-keyboard button presses. See buttonpress.go — the

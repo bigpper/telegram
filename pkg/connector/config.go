@@ -67,6 +67,20 @@ type TelegramConfig struct {
 	APIID   int    `yaml:"api_id"`
 	APIHash string `yaml:"api_hash"`
 
+	// COMPANY PATCH — customer panel widget, installed into every portal room at
+	// creation. See widgetprovision.go for why the bridge does this rather than the
+	// Management API.
+	//
+	// One URL for every room; $matrix_room_id is substituted by Element, not here, so
+	// leave it literal. It becomes room state and is readable by every member, so it
+	// must carry no credential — the page authenticates with an OpenID token instead.
+	//
+	// Empty is a supported state, not a broken one: no widget is installed and Element
+	// renders the panel's empty state itself. Leave it empty until a host system
+	// exists to point at.
+	CompanyWidgetURL  string `yaml:"company_widget_url"`
+	CompanyWidgetName string `yaml:"company_widget_name"`
+
 	DeviceInfo      DeviceInfo                  `yaml:"device_info"`
 	AnimatedSticker media.AnimatedStickerConfig `yaml:"animated_sticker"`
 	MemberList      MemberListConfig            `yaml:"member_list"`

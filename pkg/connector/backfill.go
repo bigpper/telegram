@@ -190,7 +190,8 @@ func (tc *TelegramClient) FetchMessages(ctx context.Context, fetchParams bridgev
 			attempts := 0
 			var err error
 			for retry && attempts < 5 {
-				retry, err = tgerr.FloodWait(ctx, tc.client.Invoke(ctx, req, &box))
+				// COMPANY PATCH: record the wait before sleeping through it. See floodwait.go.
+				retry, err = tc.floodWait(ctx, tc.client.Invoke(ctx, req, &box))
 				attempts++
 			}
 			if err != nil {
