@@ -88,7 +88,23 @@ func (tc *TelegramConnector) GetName() bridgev2.BridgeName {
 	return bridgev2.BridgeName{
 		DisplayName:          "Telegram",
 		NetworkURL:           "https://telegram.org/",
-		NetworkIcon:          "mxc://maunium.net/tJCRmUyJDsgRNgqhOgoiHWbX",
+		// COMPANY PATCH: no network icon, rather than one that cannot load.
+		//
+		// Upstream points this at an image on maunium.net. mautrix writes it into the
+		// m.bridge / uk.half-shot.bridge state event of every portal room, so every
+		// agent's client requests it in every conversation — and every request fails
+		// with 403, forever. Three deliberate decisions guarantee it: the URI is remote
+		// media, federation is disabled (ADR-0003), and authenticated media turns the
+		// refusal into a 403 rather than a 404. Upstream assumes a federated bridge; this
+		// one is the opposite by design.
+		//
+		// Clearing the appservice bot's own avatar (appservice.bot.avatar: remove) does
+		// NOT cover this. That is the bot's profile; this is the protocol icon in room
+		// state, and they are written from different places.
+		//
+		// To have an icon, upload one to THIS homeserver and put its mxc:// here. Any
+		// URI on another server has the same problem.
+		NetworkIcon:          "",
 		NetworkID:            "telegram",
 		BeeperBridgeType:     "telegram",
 		DefaultPort:          29317,
